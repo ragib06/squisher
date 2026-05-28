@@ -4,26 +4,54 @@ Web app that turns a batch of images into a single PDF whose final size fits a u
 
 ## What it does
 
-- Accept many images at once via drag-and-drop or file picker (JPEG, PNG, WebP, GIF, AVIF, HEIC/HEIF).
-- User enters a target PDF size in KB or MB.
-- App estimates whether the target is feasible. If not, it explains the minimum reachable size and what to change (drop largest images, raise target).
-- If feasible, the app compresses and resizes images, assembles them into one PDF, and lets the user download it.
+- Accept many images at once via drag-and-drop or file picker (JPEG, PNG, WebP, HEIC/HEIF).
+- After upload, app shows the minimum achievable PDF size and pre-fills the target input with that value.
+- As the user edits the target, a live status text below the input turns green (feasible) or red (below minimum); no separate "check" step.
+- The Compress button is always visible but only enabled when the target is feasible.
+- Output PDF downloads directly from the browser.
 - Per-image upload limit: 25 MB.
 
 ## Design highlights
 
 - **Fully client-side.** No uploads. Images never leave the browser. No server, no database, no accounts.
 - **Portable static build.** Pure `next export` output — the same `out/` directory deploys to Vercel, Cloudflare Pages, or a self-hosted NAS.
-- **Web Worker for heavy work.** Compression and PDF assembly run off the main thread so the UI stays responsive on large batches.
+- **Web Worker for heavy work.** Compression and PDF assembly run off the main thread so the UI stays responsive on large batches. Falls back to the main thread on browsers without `OffscreenCanvas` (Safari < 16.4).
 - **Lazy HEIC support.** The HEIC decoder is only fetched when an iPhone photo is dropped.
+- **Insecure-context fallback.** Works on plain HTTP LAN deployments — `crypto.randomUUID` is feature-detected with a `Math.random`-based fallback.
 
 ## Stack
 
-Next.js 16 (App Router) · TypeScript · Tailwind CSS · shadcn/ui · pdf-lib · react-dropzone · heic2any
+Next.js 16 (App Router, webpack build) · TypeScript · Tailwind CSS v4 · shadcn/ui (radix-nova) · pdf-lib · react-dropzone · heic2any
+
+## Build & run
+
+```bash
+pnpm install
+pnpm build          # → out/ (static export)
+pnpm dlx serve out  # local preview, http://localhost:3000
+```
+
+The build script uses `next build --webpack` instead of the default Turbopack build. Turbopack's workspace-root inference fails on this repo's pnpm + sibling-Next-projects layout; webpack handles the static export cleanly.
+
+### HTTPS preview
+
+`OffscreenCanvas` and `URL.createObjectURL` work over HTTP, but some browsers prefer HTTPS for full feature support. Two paths:
+
+```bash
+# Self-signed (browser warning):
+openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
+  -days 365 -subj "/CN=squisher.local"
+pnpm dlx serve out --ssl-cert cert.pem --ssl-key key.pem -l 3000
+
+# mkcert (trusted locally, no warning):
+mkcert -install
+mkcert squisher.local localhost 192.168.x.x
+pnpm dlx serve out --ssl-cert squisher.local+2.pem --ssl-key squisher.local+2-key.pem -l 3000
+```
 
 ## Status
 
-Greenfield — planning complete. See `plan.md` for the full implementation plan, library choices, size-estimation algorithm, compression strategy, deployment options, and verification steps.
+Shipped v1. See `plan.md` for the full design rationale, library choices, size-estimation algorithm, compression strategy, deployment options, and verification steps.
 
 ## Audience
 

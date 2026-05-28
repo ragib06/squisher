@@ -2,19 +2,19 @@
 
 ## Context
 
-Greenfield web app. User uploads N images, gives a target final PDF size, app compresses/resizes the images and assembles them into one PDF whose size lands within target. Must estimate feasibility up front and refuse impossible targets with a useful error (e.g. "min achievable is 800 KB; lower image count or raise target"). Per-image upload cap: 25 MB. All processing client-side — no server, no DB, no auth — so the tool is zero-infra to operate and fully private. Stack: Next.js 16 App Router + TypeScript + Tailwind + shadcn/ui. Audience: friends + family, low traffic.
+Web app. User uploads N images, gives a target final PDF size, app compresses/resizes the images and assembles them into one PDF whose size lands within target. Estimates feasibility live as the user types and refuses impossible targets with a useful status message (e.g. "Too small — minimum is 800 KB"). Per-image upload cap: 25 MB. All processing client-side — no server, no DB, no auth — so the tool is zero-infra to operate and fully private. Stack: Next.js 16 App Router + TypeScript + Tailwind v4 + shadcn/ui. Audience: friends + family, low traffic.
 
-Deployment must stay portable across three targets: Vercel (initial), Cloudflare Pages, and self-hosted NAS. Achieved by shipping pure static output — same `out/` directory works on all three.
+Deployment stays portable across three targets: Vercel, Cloudflare Pages, and self-hosted NAS. Achieved by shipping pure static output — same `out/` directory works on all three.
 
 ## Library Choices
 
 | Concern | Pick | Why |
 |---|---|---|
-| PDF assembly | `pdf-lib` | Browser-native, embeds JPEG/PNG without re-encoding, full page-size control. |
-| Image compression | Canvas `toBlob('image/jpeg', q)` | Direct quality + dimension control, zero extra bundle. |
+| PDF assembly | `pdf-lib` | Browser-native, embeds JPEG without re-encoding, full page-size control. |
+| Image compression | Canvas `toBlob('image/jpeg', q)` (OffscreenCanvas in worker) | Direct quality + dimension control, zero extra bundle. |
 | HEIC decode | `heic2any` (lazy-loaded) | Only paid for when an `.heic`/`.heif` is dropped (~500 KB). |
-| Drag-drop | `react-dropzone` | File-type filter, paste, multi-file, a11y. |
-| State | `useReducer` | 5-state flow doesn't need xstate/zustand. |
+| Drag-drop | `react-dropzone` | File-type filter, multi-file, a11y. |
+| State | `useReducer` | Small flow doesn't need xstate/zustand. |
 
 ## Size Estimation (`lib/estimate.ts`)
 
@@ -24,10 +24,10 @@ Deployment must stay portable across three targets: Vercel (initial), Cloudflare
 4. Envelope:
    - `min = Σ (w·h · 0.08 bpp, dims ÷ 2) + overhead`
    - `max = Σ original_size + overhead`
-5. Verdict:
-   - `target < min` → infeasible. Show "min ≈ X MB. Drop K largest or raise target."
-   - `target > Σ original` → "no compression needed."
-   - Else feasible.
+5. Verdict (computed live on every target change):
+   - `target < min` → `infeasible`. Status: "Too small — minimum is X."
+   - `target ≥ Σ original` → `no_compression`. Status: "Target above original size."
+   - Else `feasible`.
 
 ## Compression Strategy (`lib/compress.ts`)
 
@@ -46,38 +46,44 @@ Per-image budgeting deferred to v2.
 ```
 app/
   layout.tsx          root + Tailwind
-  page.tsx            single-page UI, wires reducer + components
-  globals.css
+  page.tsx            single-page UI, wires reducer + components, derives verdict
+  globals.css         shadcn theme tokens (light + dark)
 components/
   Dropzone.tsx
   FileList.tsx        thumbnails, sizes, remove
-  TargetSizeInput.tsx numeric + unit (KB/MB)
-  FeasibilityBanner.tsx
+  TargetSizeInput.tsx numeric + KB/MB toggle, live status text
   ProgressView.tsx
   DownloadCard.tsx
-  ui/                 shadcn primitives (button, card, input, progress)
+  ui/                 shadcn primitives (button, card, input, progress, alert)
 lib/
   types.ts            ImageItem, Verdict, FlowState, Action
-  decode.ts           File → ImageBitmap (+ HEIC branch)
+  decode.ts           File → ImageBitmap (+ HEIC branch, randomUUID fallback)
   estimate.ts
   compress.ts
   pdf.ts              pdf-lib assembly, one page per image
   flow.ts             reducer + state machine
-  worker.ts           OffscreenCanvas worker (compress + assemble)
+  worker.ts           OffscreenCanvas worker bootstrap (+ main-thread fallback)
+  worker-impl.ts      DedicatedWorker message handler
 ```
 
-Web Worker required — encoding a 25 MB JPEG on the main thread freezes UI for seconds. Use `OffscreenCanvas`; fall back to main thread if missing (Safari < 16.4).
+Web Worker required — encoding a 25 MB JPEG on the main thread freezes UI for seconds. Uses `OffscreenCanvas`; falls back to main thread if missing (Safari < 16.4).
 
 ## State Machine (`lib/flow.ts`)
 
 ```
-idle → filesAdded → estimating → feasibilityShown
-                                   ├─ infeasible → filesAdded
-                                   └─ feasible → compressing → done
-                                                        └─ error → filesAdded
+idle → filesAdded ⇄ (live verdict derived in page.tsx)
+         └─ START_COMPRESS → compressing → done
+                                  └─ error → filesAdded
 ```
 
-`useReducer` with discriminated-union `Action`.
+`useReducer` with discriminated-union `Action`. No explicit `estimating`/`feasibilityShown` states — the verdict is a `useMemo` derived from `(items, targetBytes)` in `app/page.tsx`, recomputed on every input change. On first `ADD_FILES`, the reducer pre-fills `targetBytes` with `defaultTargetBytes(estimateMinBytes(items))` — ceiled to whole KB or 0.1 MB so the input display round-trips ≥ min and the user lands in a feasible state by default.
+
+## UX Decisions
+
+- No "Check feasibility" button. Verdict updates live below the target input — green for feasible/no_compression, red for infeasible.
+- Compress button is always rendered but disabled when verdict is `infeasible` or absent.
+- "Minimum achievable PDF size" surfaced above the target input as soon as files are added.
+- Target input defaults to the minimum feasible value rounded up to a clean display unit so the form opens in a runnable state.
 
 ## Critical Tradeoffs
 
@@ -85,18 +91,17 @@ idle → filesAdded → estimating → feasibilityShown
 - **Empirical bpp constants** are ~20% off worst case. If iteration count > 2, run a one-image calibration pass and retry.
 - **Global q** can over-degrade small images. Acceptable v1; per-image fallback deferred.
 - **`OffscreenCanvas` on Safari** shipped 16.4 (2023). Main-thread path covers older.
+- **`crypto.randomUUID` requires a secure context.** Detected at runtime with a `Date.now() + Math.random()` fallback so HTTP LAN deployments still work.
 
-## Implementation Order
+## Build
 
-1. `pnpm create next-app` (App Router, TS, Tailwind, no src/). `pnpm dlx shadcn init` then add `button card input progress alert`.
-2. `pnpm add pdf-lib react-dropzone heic2any`.
-3. Lock down to static export — see Deployment section. No API routes, no middleware, no server actions.
-4. `lib/types.ts` + `lib/decode.ts` + `lib/estimate.ts` (pure, unit-testable).
-5. `lib/compress.ts` + `lib/pdf.ts` (pure).
-6. `lib/worker.ts` wrapping compress + pdf for off-main-thread.
-7. `lib/flow.ts` reducer.
-8. Components, then `app/page.tsx` wiring.
-9. Manual verification.
+```bash
+pnpm install
+pnpm build          # → out/   (uses next build --webpack)
+pnpm dlx serve out  # local preview
+```
+
+`pnpm build` is wired to `next build --webpack`. Turbopack's workspace-root inference fails when the repo lives next to sibling Next projects under a shared parent (`/mnt/nas/projects/*`) and `node_modules/next` is a pnpm symlink — it walks up from `app/` and can't resolve `next/package.json`. Setting `turbopack.root` in `next.config.ts` did not override this. The webpack build path skips the issue entirely and produces the same `out/` directory.
 
 ## Deployment — Portable Static Build
 
@@ -110,54 +115,47 @@ Target Vercel first; Cloudflare Pages and NAS stay one-command swaps. All three 
 - Lazy-load `heic2any` only on HEIC drop.
 - Tested locally with plain static server: `pnpm build && pnpm dlx serve out`.
 
-### Option 1 — Vercel (initial)
+### Option 1 — Vercel
 
-- `vercel.ts`: `framework: 'nextjs'`, `buildCommand: 'next build'`. Vercel auto-detects `output: 'export'` and serves `out/` from CDN.
+- `vercel.ts`: `framework: 'nextjs'`, `buildCommand: 'pnpm build'`. Vercel auto-detects `output: 'export'` and serves `out/` from CDN.
 - No env vars, no functions provisioned.
-- Bandwidth-only usage. ~500 KB initial bundle + lazy HEIC chunk. For friends/family scale (≤ hundreds visits/month) negligible — well under 100 GB/mo free tier shared with Gronthee.
+- Bandwidth-only usage. For friends/family scale, well under the free tier.
 - Deploy: push to GitHub → auto-deploy, or `vercel deploy --prod`.
 
 ### Option 2 — Cloudflare Pages
 
 - Build command: `pnpm build`. Output directory: `out`.
-- Cloudflare Pages free: unlimited bandwidth, 500 builds/mo. Fully isolated from Vercel quotas.
-- Switch steps:
-  1. Push repo to GitHub (already required for Vercel anyway).
-  2. Cloudflare dashboard → Pages → Connect to Git → pick repo.
-  3. Set build command `pnpm build`, output dir `out`, Node 24.
-  4. (Optional) Add custom domain.
-  5. Disable / pause Vercel project to stop double-deploy.
+- Cloudflare Pages free: unlimited bandwidth, 500 builds/mo.
+- Switch: push to GitHub, connect repo in Cloudflare dashboard, set build command + output dir + Node 24.
 
 ### Option 3 — Self-hosted NAS
 
 - Two sub-options:
-  - **(a) Static files via existing reverse proxy** (Caddy / nginx / Synology Web Station):
-    1. `pnpm build` locally or in CI → `out/` directory.
+  - **(a) Static files via reverse proxy** (Caddy / nginx / Synology Web Station):
+    1. `pnpm build` locally → `out/`.
     2. `rsync -av out/ nas:/srv/squisher/`.
-    3. Point nginx/Caddy site root to `/srv/pdf-bundler`. Single try-files rule: `try_files $uri $uri/ /index.html;` (or Caddy `file_server` + `try_files`).
-    4. Serve over HTTPS (Caddy auto-TLS or Let's Encrypt). HTTPS required — `OffscreenCanvas`, `URL.createObjectURL`, clipboard paste all need secure context.
-  - **(b) Docker on NAS** for one-shot setup:
-    - `Dockerfile`: `FROM nginx:alpine`, `COPY out /usr/share/nginx/html`, `COPY nginx.conf /etc/nginx/conf.d/default.conf`.
-    - `docker compose up -d` on NAS.
-- No backend, no database — NAS only serves static files. Resource cost: a few MB RAM for nginx.
-- Reachability options for friends/family: Tailscale, Cloudflare Tunnel, or port-forward 443 with dynamic DNS.
+    3. Point nginx/Caddy site root at `/srv/squisher`. Single try-files rule: `try_files $uri $uri/ /index.html;`.
+    4. Serve over HTTPS. Required for full feature support across browsers. Two paths:
+       - **mkcert** for trusted local CA: `mkcert -install`, `mkcert nas.local 192.168.x.x`, then `serve --ssl-cert ... --ssl-key ...`. Trust must be installed on each client device.
+       - **Caddy auto-TLS** with a real domain via Let's Encrypt.
+  - **(b) Docker on NAS**:
+    - `Dockerfile`: `FROM nginx:alpine`, `COPY out /usr/share/nginx/html`.
+    - `docker compose up -d`.
+- No backend, no database. Resource cost: a few MB RAM for nginx.
+- Reachability for friends/family: Tailscale, Cloudflare Tunnel, or port-forward 443 with dynamic DNS.
 
 ### Switching Between Targets
 
-Same artifact (`out/`) deploys everywhere. Switch checklist:
-
-1. Run `pnpm build` and confirm `out/` exists and `out/index.html` loads via `pnpm dlx serve out` locally.
-2. Pick host: push triggers Vercel; push triggers Cloudflare Pages (if connected); `rsync` to NAS.
-3. Update DNS / CNAME at the registrar to point the domain at the chosen host.
-4. To fully migrate off Vercel: pause the Vercel project (dashboard → Settings → General → Pause) so it stops rebuilding and consuming any quota.
+Same `out/` artifact deploys everywhere. Push to GitHub triggers Vercel and/or Cloudflare; `rsync` to NAS. Update DNS at the registrar to point the domain at the chosen host. Pause Vercel project to fully migrate off.
 
 ## Verification
 
-1. `pnpm dev`, open `localhost:3000`.
-2. Drop 3 JPEGs (~2 MB each), target 1 MB → feasible, output ~1 MB ±10%, opens in Chrome PDF viewer.
-3. Drop 10 PNGs, target 100 KB → red infeasibility banner with min estimate.
+1. `pnpm dev` (Turbopack dev server is fine), open `localhost:3000`.
+2. Drop 3 JPEGs (~2 MB each), target pre-fills to min → green status, output ~min ±10%, opens in Chrome PDF viewer.
+3. Lower target below min → red "Too small — minimum is X" status, Compress button disabled.
 4. Drop 1 HEIC → lazy `heic2any` load, conversion succeeds.
 5. Drop 30 MB file → rejected at dropzone with toast.
-6. Target 50 MB, inputs 2 MB total → "no compression needed" path.
+6. Target above original total → green "Target above original size — PDF will be at most X" status.
 7. DevTools 4× CPU throttle → UI responsive during compress (proves worker).
-8. `pnpm build && pnpm dlx serve out` → app works fully against plain static server. Proves Cloudflare/NAS portability before touching either.
+8. `pnpm build && pnpm dlx serve out` → app works fully against plain static server. Proves Cloudflare/NAS portability.
+9. Serve over HTTP from LAN IP → image upload still works (proves `crypto.randomUUID` fallback).
