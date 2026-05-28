@@ -1,5 +1,6 @@
 "use client";
 
+import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ImageItem } from "@/lib/types";
 
@@ -52,9 +53,10 @@ export function FileList({
             <button
               type="button"
               onClick={() => onRemove(it.id)}
-              className="absolute top-1 right-1 rounded-full bg-background/90 px-2 py-0.5 text-xs opacity-0 ring-1 ring-foreground/10 transition group-hover:opacity-100"
+              aria-label={`Remove ${it.name}`}
+              className="absolute top-1 right-1 flex h-6 w-6 items-center justify-center rounded-full bg-background/90 text-foreground shadow-sm ring-1 ring-foreground/10 transition hover:bg-destructive hover:text-destructive-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
             >
-              Remove
+              <X className="h-3.5 w-3.5" />
             </button>
           </li>
         ))}
