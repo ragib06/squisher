@@ -8,26 +8,26 @@ import type { FeasibilityVerdict } from "@/lib/types";
 type Unit = "KB" | "MB";
 
 function toBytes(value: number, unit: Unit): number {
-  return unit === "MB" ? value * 1024 * 1024 : value * 1024;
+  return unit === "MB" ? value * 1000 * 1000 : value * 1000;
 }
 
 function fmtBytes(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+  if (bytes < 1000 * 1000) return `${(bytes / 1000).toFixed(0)} KB`;
+  return `${(bytes / 1000 / 1000).toFixed(2)} MB`;
 }
 
 function fmtMinBytes(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
-  return `${(Math.ceil(bytes / (1024 * 1024 / 10)) / 10).toFixed(1)} MB`;
+  if (bytes < 1000 * 1000) return `${Math.ceil(bytes / 1000)} KB`;
+  return `${(Math.ceil(bytes / (1000 * 1000 / 10)) / 10).toFixed(1)} MB`;
 }
 
 function pickUnit(bytes: number): Unit {
-  return bytes >= 1024 * 1024 ? "MB" : "KB";
+  return bytes >= 1000 * 1000 ? "MB" : "KB";
 }
 
 function formatForUnit(bytes: number, unit: Unit): string {
-  if (unit === "MB") return (bytes / 1024 / 1024).toFixed(1);
-  return (bytes / 1024).toFixed(0);
+  if (unit === "MB") return (bytes / 1000 / 1000).toFixed(1);
+  return (bytes / 1000).toFixed(0);
 }
 
 export function TargetSizeInput({

@@ -12,8 +12,8 @@ import { useEffect, useMemo } from "react";
 import type { CompressOutput } from "@/lib/types";
 
 function fmt(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+  if (bytes < 1000 * 1000) return `${(bytes / 1000).toFixed(0)} KB`;
+  return `${(bytes / 1000 / 1000).toFixed(2)} MB`;
 }
 
 export function DownloadCard({

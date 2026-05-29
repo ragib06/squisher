@@ -136,6 +136,6 @@ export async function compressAll(
     guard++;
   }
 
-  onProgress(1, `Compressed (${(actual / 1024).toFixed(0)} KB)`);
+  onProgress(1, `Compressed (${(actual / 1000).toFixed(0)} KB)`);
   return { encoded, scale, quality };
 }

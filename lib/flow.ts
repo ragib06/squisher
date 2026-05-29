@@ -2,11 +2,11 @@ import type { Action, FlowState } from "./types";
 import { estimateMinBytes } from "./estimate";
 
 function defaultTargetBytes(min: number): number {
-  if (min >= 1024 * 1024) {
-    const tenths = Math.ceil(min / (1024 * 1024 / 10));
-    return Math.round((tenths / 10) * 1024 * 1024);
+  if (min >= 1000 * 1000) {
+    const tenths = Math.ceil(min / (1000 * 1000 / 10));
+    return Math.round((tenths / 10) * 1000 * 1000);
   }
-  return Math.ceil(min / 1024) * 1024;
+  return Math.ceil(min / 1000) * 1000;
 }
 
 export const initialState: FlowState = { kind: "idle" };
