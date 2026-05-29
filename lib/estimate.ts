@@ -1,4 +1,4 @@
-import type { FeasibilityVerdict, ImageItem } from "./types";
+import type { FeasibilityVerdict, ImageItem, SplitVerdict } from "./types";
 
 export const PDF_OVERHEAD_BASE = 2048;
 export const PDF_OVERHEAD_PER_PAGE = 600;
@@ -60,6 +60,46 @@ export function qualityForTarget(
   if (bppNeeded > BPP_TABLE[BPP_TABLE.length - 1].bpp)
     q = BPP_TABLE[BPP_TABLE.length - 1].q;
   return q;
+}
+
+function itemMinContribution(item: ImageItem): number {
+  return (item.width / 2) * (item.height / 2) * MIN_BPP + PDF_OVERHEAD_PER_PAGE;
+}
+
+export function planParts(
+  items: ImageItem[],
+  targetBytes: number,
+): SplitVerdict {
+  for (const it of items) {
+    const single = PDF_OVERHEAD_BASE + itemMinContribution(it);
+    if (single > targetBytes) {
+      return {
+        kind: "infeasibleSplit",
+        oversizedItem: it,
+        minSinglePartBytes: Math.round(single),
+      };
+    }
+  }
+  const parts: ImageItem[][] = [[]];
+  const partMins: number[] = [PDF_OVERHEAD_BASE];
+  for (const it of items) {
+    const m = itemMinContribution(it);
+    const lastIdx = parts.length - 1;
+    if (partMins[lastIdx] + m > targetBytes && parts[lastIdx].length > 0) {
+      parts.push([]);
+      partMins.push(PDF_OVERHEAD_BASE);
+    }
+    parts[parts.length - 1].push(it);
+    partMins[partMins.length - 1] += m;
+  }
+  return {
+    kind: "feasibleSplit",
+    plan: {
+      parts,
+      partsCount: parts.length,
+      partMinBytes: partMins.map((v) => Math.round(v)),
+    },
+  };
 }
 
 export function estimate(

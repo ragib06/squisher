@@ -8,7 +8,8 @@ Web app that turns a batch of images into a single PDF whose final size fits a u
 - After upload, app shows the minimum achievable PDF size and pre-fills the target input with that value.
 - As the user edits the target, a live status text below the input turns green (feasible) or red (below minimum); no separate "check" step.
 - The Compress button is always visible but only enabled when the target is feasible.
-- Output PDF downloads directly from the browser.
+- **Split into multiple PDFs.** A checkbox reinterprets the target as a *per-part* cap: the app packs the images across as many PDFs as needed (preserving order) so each one lands under the target. Useful for upload limits or when no single PDF can hit a very small target.
+- Output PDF(s) download directly from the browser — one Download button per file.
 - Per-image upload limit: 25 MB.
 
 ## Design highlights
@@ -51,7 +52,7 @@ pnpm dlx serve out --ssl-cert squisher.local+2.pem --ssl-key squisher.local+2-ke
 
 ## Status
 
-Shipped v1. See `plan.md` for the full design rationale, library choices, size-estimation algorithm, compression strategy, deployment options, and verification steps.
+Shipped v1 + multi-PDF split. See `plan.md` for the full design rationale, library choices, size-estimation algorithm, compression strategy, split bin-packing, deployment options, and verification steps.
 
 ## Audience
 

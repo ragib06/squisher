@@ -10,8 +10,11 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { initialState, reducer } from "@/lib/flow";
 import { fileToImageItem } from "@/lib/decode";
-import { estimate, estimateMinBytes } from "@/lib/estimate";
+import { estimate, estimateMinBytes, planParts } from "@/lib/estimate";
 import { runJob } from "@/lib/worker";
+import type { ImageItem } from "@/lib/types";
+
+const EMPTY_ITEMS: ImageItem[] = [];
 
 function fmtBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
@@ -24,25 +27,42 @@ export default function Home() {
   const [decoding, setDecoding] = useState(false);
   const cancelRef = useRef<null | (() => void)>(null);
 
-  const items = state.kind !== "idle" && "items" in state ? state.items : [];
+  const items = useMemo(
+    () => (state.kind !== "idle" && "items" in state ? state.items : EMPTY_ITEMS),
+    [state],
+  );
   const targetBytes =
     state.kind !== "idle" && "targetBytes" in state ? state.targetBytes : null;
+  const splitEnabled =
+    state.kind !== "idle" && "splitEnabled" in state ? state.splitEnabled : false;
 
   const minBytes = useMemo(
     () => (items.length > 0 ? estimateMinBytes(items) : null),
     [items],
   );
 
-  const verdict = useMemo(() => {
+  const singleVerdict = useMemo(() => {
     if (items.length === 0 || targetBytes == null || targetBytes <= 0)
       return null;
     return estimate(items, targetBytes);
   }, [items, targetBytes]);
 
+  const splitVerdict = useMemo(() => {
+    if (!splitEnabled) return null;
+    if (items.length === 0 || targetBytes == null || targetBytes <= 0)
+      return null;
+    return planParts(items, targetBytes);
+  }, [items, targetBytes, splitEnabled]);
+
+  const verdictForInput = splitEnabled ? null : singleVerdict;
+
   const canCompress =
     state.kind === "filesAdded" &&
-    verdict != null &&
-    (verdict.kind === "feasible" || verdict.kind === "no_compression");
+    (splitEnabled
+      ? splitVerdict?.kind === "feasibleSplit"
+      : singleVerdict != null &&
+        (singleVerdict.kind === "feasible" ||
+          singleVerdict.kind === "no_compression"));
 
   const handleFiles = useCallback(async (files: File[]) => {
     setDecoding(true);
@@ -62,24 +82,26 @@ export default function Home() {
 
   const doCompress = useCallback(() => {
     if (state.kind !== "filesAdded" || state.targetBytes == null) return;
+    const parts: typeof state.items[] =
+      splitEnabled && splitVerdict?.kind === "feasibleSplit"
+        ? splitVerdict.plan.parts
+        : [state.items];
     dispatch({ type: "START_COMPRESS" });
     const { promise, cancel } = runJob(
-      state.items,
+      parts,
       state.targetBytes,
       (progress, message) => dispatch({ type: "PROGRESS", progress, message }),
     );
     cancelRef.current = cancel;
     promise
-      .then(({ pdfBlob, finalBytes }) =>
-        dispatch({ type: "COMPRESS_DONE", pdfBlob, finalBytes }),
-      )
+      .then(({ outputs }) => dispatch({ type: "COMPRESS_DONE", outputs }))
       .catch((e: unknown) =>
         dispatch({
           type: "ERROR",
           message: e instanceof Error ? e.message : String(e),
         }),
       );
-  }, [state]);
+  }, [state, splitEnabled, splitVerdict]);
 
   useEffect(() => {
     return () => {
@@ -128,7 +150,8 @@ export default function Home() {
 
       {items.length > 0 && minBytes != null && (
         <p className="text-xs text-muted-foreground">
-          Minimum achievable PDF size: <span className="font-medium text-foreground">{fmtBytes(minBytes)}</span>
+          Minimum achievable PDF size:{" "}
+          <span className="font-medium text-foreground">{fmtBytes(minBytes)}</span>
         </p>
       )}
 
@@ -137,11 +160,63 @@ export default function Home() {
           <TargetSizeInput
             bytes={targetBytes}
             onChange={setTarget}
-            verdict={verdict}
+            verdict={verdictForInput}
           />
+
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={splitEnabled}
+              onChange={(e) =>
+                dispatch({ type: "SET_SPLIT", enabled: e.target.checked })
+              }
+              className="mt-0.5 h-4 w-4 rounded border-border accent-foreground"
+            />
+            <span>
+              Split into multiple PDFs — target size applies to{" "}
+              <span className="font-medium">each part</span>.
+            </span>
+          </label>
+
+          {splitEnabled && splitVerdict && (
+            <div className="rounded-md border border-border bg-muted/40 p-3 text-sm">
+              {splitVerdict.kind === "feasibleSplit" ? (
+                <>
+                  <p>
+                    Will produce{" "}
+                    <span className="font-medium">
+                      {splitVerdict.plan.partsCount}{" "}
+                      {splitVerdict.plan.partsCount === 1 ? "PDF" : "PDFs"}
+                    </span>{" "}
+                    of ≤ {fmtBytes(targetBytes!)} each.
+                  </p>
+                  <ul className="mt-1 text-xs text-muted-foreground">
+                    {splitVerdict.plan.parts.map((p, i) => (
+                      <li key={i}>
+                        Part {i + 1}: {p.length}{" "}
+                        {p.length === 1 ? "image" : "images"} (min ≈{" "}
+                        {fmtBytes(splitVerdict.plan.partMinBytes[i])})
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <p className="text-red-600 dark:text-red-400">
+                  &ldquo;{splitVerdict.oversizedItem.name}&rdquo; alone needs ≥{" "}
+                  {fmtBytes(splitVerdict.minSinglePartBytes)}. Raise target or
+                  remove it.
+                </p>
+              )}
+            </div>
+          )}
+
           {state.kind === "filesAdded" && (
             <Button onClick={doCompress} disabled={!canCompress}>
-              Compress & build PDF
+              {splitEnabled &&
+              splitVerdict?.kind === "feasibleSplit" &&
+              splitVerdict.plan.partsCount > 1
+                ? `Compress & build ${splitVerdict.plan.partsCount} PDFs`
+                : "Compress & build PDF"}
             </Button>
           )}
         </div>
@@ -153,8 +228,7 @@ export default function Home() {
 
       {state.kind === "done" && (
         <DownloadCard
-          pdfBlob={state.pdfBlob}
-          finalBytes={state.finalBytes}
+          outputs={state.outputs}
           targetBytes={state.targetBytes}
           onReset={() => dispatch({ type: "RESET" })}
         />

@@ -1,10 +1,10 @@
-import type { ImageItem } from "./types";
+import type { CompressOutput, ImageItem } from "./types";
 import type { WorkerInMessage, WorkerOutMessage } from "./worker-impl";
 import { compressAll } from "./compress";
 import { buildPdf } from "./pdf";
 
 export type JobProgress = (progress: number, message: string) => void;
-export type JobResult = { pdfBlob: Blob; finalBytes: number };
+export type JobResult = { outputs: CompressOutput[] };
 
 function supportsOffscreenCanvas(): boolean {
   if (typeof OffscreenCanvas === "undefined") return false;
@@ -15,7 +15,7 @@ function supportsOffscreenCanvas(): boolean {
 }
 
 export function runJob(
-  items: ImageItem[],
+  parts: ImageItem[][],
   targetBytes: number,
   onProgress: JobProgress,
 ): { promise: Promise<JobResult>; cancel: () => void } {
@@ -29,7 +29,7 @@ export function runJob(
         if (msg.type === "progress") onProgress(msg.progress, msg.message);
         else if (msg.type === "done") {
           worker.terminate();
-          resolve({ pdfBlob: msg.pdfBlob, finalBytes: msg.finalBytes });
+          resolve({ outputs: msg.outputs });
         } else if (msg.type === "error") {
           worker.terminate();
           reject(new Error(msg.message));
@@ -39,7 +39,7 @@ export function runJob(
         worker.terminate();
         reject(new Error(e.message || "Worker error"));
       };
-      const msg: WorkerInMessage = { type: "run", items, targetBytes };
+      const msg: WorkerInMessage = { type: "run", parts, targetBytes };
       worker.postMessage(msg);
     });
     return { promise, cancel: () => worker.terminate() };
@@ -47,12 +47,28 @@ export function runJob(
 
   let cancelled = false;
   const promise = (async () => {
-    const { encoded } = await compressAll(items, targetBytes, (p, m) => {
-      if (cancelled) throw new Error("Cancelled");
-      onProgress(p, m);
-    });
-    const pdfBlob = await buildPdf(encoded);
-    return { pdfBlob, finalBytes: pdfBlob.size };
+    const outputs: CompressOutput[] = [];
+    const total = parts.length;
+    for (let i = 0; i < total; i++) {
+      const part = parts[i];
+      const label = total > 1 ? `Part ${i + 1}/${total}: ` : "";
+      const { encoded } = await compressAll(part, targetBytes, (p, m) => {
+        if (cancelled) throw new Error("Cancelled");
+        onProgress((i + p) / total, label + m);
+      });
+      const pdfBlob = await buildPdf(encoded);
+      outputs.push({
+        blob: pdfBlob,
+        finalBytes: pdfBlob.size,
+        name: total > 1 ? `squished-part${i + 1}.pdf` : "squished.pdf",
+      });
+    }
+    return { outputs };
   })();
-  return { promise, cancel: () => (cancelled = true, undefined) };
+  return {
+    promise,
+    cancel: () => {
+      cancelled = true;
+    },
+  };
 }

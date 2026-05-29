@@ -8,7 +8,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo } from "react";
+import type { CompressOutput } from "@/lib/types";
 
 function fmt(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
@@ -16,46 +17,72 @@ function fmt(bytes: number): string {
 }
 
 export function DownloadCard({
-  pdfBlob,
-  finalBytes,
+  outputs,
   targetBytes,
   onReset,
 }: {
-  pdfBlob: Blob;
-  finalBytes: number;
+  outputs: CompressOutput[];
   targetBytes: number;
   onReset: () => void;
 }) {
-  const [url, setUrl] = useState<string>("");
+  const urls = useMemo(
+    () => outputs.map((o) => URL.createObjectURL(o.blob)),
+    [outputs],
+  );
 
   useEffect(() => {
-    const u = URL.createObjectURL(pdfBlob);
-    setUrl(u);
-    return () => URL.revokeObjectURL(u);
-  }, [pdfBlob]);
+    return () => {
+      for (const u of urls) URL.revokeObjectURL(u);
+    };
+  }, [urls]);
 
-  const delta = ((finalBytes - targetBytes) / targetBytes) * 100;
-  const within10 = Math.abs(delta) <= 10;
+  const multi = outputs.length > 1;
+  const totalBytes = outputs.reduce((a, o) => a + o.finalBytes, 0);
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>PDF ready</CardTitle>
+        <CardTitle>{multi ? `${outputs.length} PDFs ready` : "PDF ready"}</CardTitle>
         <CardDescription>
-          {fmt(finalBytes)} ({delta >= 0 ? "+" : ""}
-          {delta.toFixed(1)}% vs target {fmt(targetBytes)}
-          {within10 ? "" : " — outside ±10%"})
+          {multi
+            ? `Total ${fmt(totalBytes)} across ${outputs.length} files (target ${fmt(targetBytes)} per part).`
+            : (() => {
+                const delta = ((outputs[0].finalBytes - targetBytes) / targetBytes) * 100;
+                const within10 = Math.abs(delta) <= 10;
+                return `${fmt(outputs[0].finalBytes)} (${delta >= 0 ? "+" : ""}${delta.toFixed(1)}% vs target ${fmt(targetBytes)}${within10 ? "" : " — outside ±10%"})`;
+              })()}
         </CardDescription>
       </CardHeader>
-      <CardContent className="flex gap-2">
-        {url && (
-          <a href={url} download="squished.pdf">
-            <Button>Download PDF</Button>
-          </a>
+      <CardContent className="flex flex-col gap-2">
+        {urls.length === outputs.length && (
+          <ul className="flex flex-col gap-2">
+            {outputs.map((o, i) => {
+              const delta = ((o.finalBytes - targetBytes) / targetBytes) * 100;
+              return (
+                <li
+                  key={i}
+                  className="flex items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{o.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {fmt(o.finalBytes)} ({delta >= 0 ? "+" : ""}
+                      {delta.toFixed(1)}% vs target)
+                    </p>
+                  </div>
+                  <a href={urls[i]} download={o.name}>
+                    <Button size="sm">Download</Button>
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
         )}
-        <Button variant="outline" onClick={onReset}>
-          Start over
-        </Button>
+        <div className="flex gap-2 pt-2">
+          <Button variant="outline" onClick={onReset}>
+            Start over
+          </Button>
+        </div>
       </CardContent>
     </Card>
   );

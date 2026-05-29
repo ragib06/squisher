@@ -2,8 +2,6 @@ import type { Action, FlowState } from "./types";
 import { estimateMinBytes } from "./estimate";
 
 function defaultTargetBytes(min: number): number {
-  // Pick a value at or above min that round-trips cleanly through the
-  // input's display rounding (whole KB, or 0.1 MB granularity).
   if (min >= 1024 * 1024) {
     const tenths = Math.ceil(min / (1024 * 1024 / 10));
     return Math.round((tenths / 10) * 1024 * 1024);
@@ -27,7 +25,11 @@ export function reducer(state: FlowState, action: Action): FlowState {
         typeof prevTarget === "number" && prevTarget > 0
           ? prevTarget
           : defaultTargetBytes(estimateMinBytes(items));
-      return { kind: "filesAdded", items, targetBytes };
+      const splitEnabled =
+        state.kind !== "idle" && "splitEnabled" in state
+          ? state.splitEnabled
+          : false;
+      return { kind: "filesAdded", items, targetBytes, splitEnabled };
     }
     case "REMOVE_FILE": {
       if (state.kind === "idle") return state;
@@ -40,7 +42,9 @@ export function reducer(state: FlowState, action: Action): FlowState {
         "targetBytes" in state && typeof state.targetBytes === "number"
           ? state.targetBytes
           : null;
-      return { kind: "filesAdded", items, targetBytes };
+      const splitEnabled =
+        "splitEnabled" in state ? state.splitEnabled : false;
+      return { kind: "filesAdded", items, targetBytes, splitEnabled };
     }
     case "CLEAR_FILES": {
       if (state.kind !== "idle" && "items" in state) {
@@ -51,10 +55,27 @@ export function reducer(state: FlowState, action: Action): FlowState {
     case "SET_TARGET": {
       if (state.kind === "idle") return state;
       if (!("items" in state)) return state;
+      const splitEnabled =
+        "splitEnabled" in state ? state.splitEnabled : false;
       return {
         kind: "filesAdded",
         items: state.items,
         targetBytes: action.bytes,
+        splitEnabled,
+      };
+    }
+    case "SET_SPLIT": {
+      if (state.kind === "idle") return state;
+      if (!("items" in state)) return state;
+      const targetBytes =
+        "targetBytes" in state && typeof state.targetBytes === "number"
+          ? state.targetBytes
+          : null;
+      return {
+        kind: "filesAdded",
+        items: state.items,
+        targetBytes,
+        splitEnabled: action.enabled,
       };
     }
     case "START_COMPRESS": {
@@ -64,6 +85,7 @@ export function reducer(state: FlowState, action: Action): FlowState {
         kind: "compressing",
         items: state.items,
         targetBytes: state.targetBytes,
+        splitEnabled: state.splitEnabled,
         progress: 0,
         message: "Starting…",
       };
@@ -78,18 +100,21 @@ export function reducer(state: FlowState, action: Action): FlowState {
         kind: "done",
         items: state.items,
         targetBytes: state.targetBytes,
-        pdfBlob: action.pdfBlob,
-        finalBytes: action.finalBytes,
+        splitEnabled: state.splitEnabled,
+        outputs: action.outputs,
       };
     }
     case "ERROR": {
       if (state.kind === "idle") return state;
       if (!("items" in state) || !("targetBytes" in state)) return state;
       const tb = typeof state.targetBytes === "number" ? state.targetBytes : 0;
+      const splitEnabled =
+        "splitEnabled" in state ? state.splitEnabled : false;
       return {
         kind: "error",
         items: state.items,
         targetBytes: tb,
+        splitEnabled,
         message: action.message,
       };
     }

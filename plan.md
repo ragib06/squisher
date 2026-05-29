@@ -41,6 +41,16 @@ Global-quality iteration:
 
 Per-image budgeting deferred to v2.
 
+## Multi-PDF Split (`planParts` in `lib/estimate.ts`)
+
+When the target is too small for a single PDF — or the user just wants smaller files — a "Split into multiple PDFs" checkbox reinterprets the target as a **per-part** cap. The app packs the images across N PDFs, each ≤ target.
+
+1. **Feasibility per image.** If any single image's minimum contribution (`(w/2)·(h/2)·MIN_BPP + per-page overhead`) plus base overhead exceeds the target, the split is `infeasibleSplit` — that one image can never fit any part. Status names the offending image and its minimum.
+2. **Greedy bin-pack.** Walk images in order, accumulating estimated *minimum* bytes into the current part. When adding the next image would push the part's min over the target (and the part is non-empty), start a new part. Returns `feasibleSplit` with `{ parts, partsCount, partMinBytes }`.
+3. Packing uses the optimistic `min` envelope, not `max`. Each part still runs the full compression iteration to land within ±10% of the per-part target, so a part may end below its min estimate but never far above target.
+
+Greedy (first-fit by input order) keeps page order intact across parts — important for documents. No bin-packing optimization to minimize part count; order preservation wins over tightest pack.
+
 ## File Layout
 
 ```
@@ -56,17 +66,17 @@ components/
   DownloadCard.tsx
   ui/                 shadcn primitives (button, card, input, progress, alert)
 lib/
-  types.ts            ImageItem, Verdict, FlowState, Action
+  types.ts            ImageItem, Verdict, SplitVerdict/SplitPlan, CompressOutput, FlowState, Action
   decode.ts           File → ImageBitmap (+ HEIC branch, randomUUID fallback)
   estimate.ts
   compress.ts
   pdf.ts              pdf-lib assembly, one page per image
   flow.ts             reducer + state machine
-  worker.ts           OffscreenCanvas worker bootstrap (+ main-thread fallback)
-  worker-impl.ts      DedicatedWorker message handler
+  worker.ts           OffscreenCanvas worker bootstrap (+ main-thread fallback); takes parts[][], returns CompressOutput[]
+  worker-impl.ts      DedicatedWorker message handler; loops parts, scales progress (i+p)/total
 ```
 
-Web Worker required — encoding a 25 MB JPEG on the main thread freezes UI for seconds. Uses `OffscreenCanvas`; falls back to main thread if missing (Safari < 16.4).
+Web Worker required — encoding a 25 MB JPEG on the main thread freezes UI for seconds. Uses `OffscreenCanvas`; falls back to main thread if missing (Safari < 16.4). The worker takes `parts: ImageItem[][]` (one entry = one PDF; single-PDF mode passes `[items]`), compresses + assembles each part in turn, and returns `CompressOutput[]` (`{ blob, finalBytes, name }`). Progress is scaled `(i + partProgress) / totalParts` with a `Part i/N:` label prefix when N > 1.
 
 ## State Machine (`lib/flow.ts`)
 
@@ -76,7 +86,7 @@ idle → filesAdded ⇄ (live verdict derived in page.tsx)
                                   └─ error → filesAdded
 ```
 
-`useReducer` with discriminated-union `Action`. No explicit `estimating`/`feasibilityShown` states — the verdict is a `useMemo` derived from `(items, targetBytes)` in `app/page.tsx`, recomputed on every input change. On first `ADD_FILES`, the reducer pre-fills `targetBytes` with `defaultTargetBytes(estimateMinBytes(items))` — ceiled to whole KB or 0.1 MB so the input display round-trips ≥ min and the user lands in a feasible state by default.
+`useReducer` with discriminated-union `Action`. No explicit `estimating`/`feasibilityShown` states — the verdict is a `useMemo` derived from `(items, targetBytes)` in `app/page.tsx`, recomputed on every input change. A `splitEnabled` boolean rides through every non-idle state (set via `SET_SPLIT`); when on, page.tsx derives a second `splitVerdict` from `planParts` and feeds the worker `splitVerdict.plan.parts` instead of `[items]`. `done` carries `outputs: CompressOutput[]` (one or many PDFs) rather than a single blob. On first `ADD_FILES`, the reducer pre-fills `targetBytes` with `defaultTargetBytes(estimateMinBytes(items))` — ceiled to whole KB or 0.1 MB so the input display round-trips ≥ min and the user lands in a feasible state by default.
 
 ## UX Decisions
 
@@ -84,6 +94,8 @@ idle → filesAdded ⇄ (live verdict derived in page.tsx)
 - Compress button is always rendered but disabled when verdict is `infeasible` or absent.
 - "Minimum achievable PDF size" surfaced above the target input as soon as files are added.
 - Target input defaults to the minimum feasible value rounded up to a clean display unit so the form opens in a runnable state.
+- **Split checkbox** below the target input. When checked, the single-PDF verdict text is hidden and replaced by a split preview: part count, per-part image count, and per-part min estimate — or a red "X alone needs ≥ Y" message when infeasible. Compress button label flips to "Compress & build N PDFs".
+- **DownloadCard** renders one row per output with its own size + ±% vs target and a Download button; multi-part shows a total-bytes summary. Object URLs created in `useMemo`, revoked on unmount.
 
 ## Critical Tradeoffs
 
@@ -156,6 +168,8 @@ Same `out/` artifact deploys everywhere. Push to GitHub triggers Vercel and/or C
 4. Drop 1 HEIC → lazy `heic2any` load, conversion succeeds.
 5. Drop 30 MB file → rejected at dropzone with toast.
 6. Target above original total → green "Target above original size — PDF will be at most X" status.
-7. DevTools 4× CPU throttle → UI responsive during compress (proves worker).
-8. `pnpm build && pnpm dlx serve out` → app works fully against plain static server. Proves Cloudflare/NAS portability.
-9. Serve over HTTP from LAN IP → image upload still works (proves `crypto.randomUUID` fallback).
+7. Check "Split into multiple PDFs" with a target below the single-PDF min → preview lists N parts, each ≤ target; Compress produces N downloadable PDFs, each within ±10% of the per-part target.
+8. Set split target below the largest single image's minimum → red "X alone needs ≥ Y" message, Compress disabled.
+9. DevTools 4× CPU throttle → UI responsive during compress (proves worker).
+10. `pnpm build && pnpm dlx serve out` → app works fully against plain static server. Proves Cloudflare/NAS portability.
+11. Serve over HTTP from LAN IP → image upload still works (proves `crypto.randomUUID` fallback).
