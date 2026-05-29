@@ -56,7 +56,3 @@ pnpm dlx serve out --ssl-cert squisher.local+2.pem --ssl-key squisher.local+2-ke
 ## Status
 
 Shipped v1 + multi-PDF split. See `plan.md` for the full design rationale, library choices, size-estimation algorithm, compression strategy, split bin-packing, deployment options, and verification steps.
-
-## Audience
-
-Built for friends and family use. Low traffic by design. Sized to fit comfortably in free tiers of any of the three hosting targets.
