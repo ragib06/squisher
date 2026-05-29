@@ -92,12 +92,14 @@ export function planParts(
     parts[parts.length - 1].push(it);
     partMins[partMins.length - 1] += m;
   }
+  const partMaxBytes = parts.map((p) => estimateMaxBytes(p));
   return {
     kind: "feasibleSplit",
     plan: {
       parts,
       partsCount: parts.length,
       partMinBytes: partMins.map((v) => Math.round(v)),
+      partMaxBytes,
     },
   };
 }

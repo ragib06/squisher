@@ -18,6 +18,7 @@ export type SplitPlan = {
   parts: ImageItem[][];
   partsCount: number;
   partMinBytes: number[];
+  partMaxBytes: number[];
 };
 
 export type SplitVerdict =

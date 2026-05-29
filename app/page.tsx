@@ -194,8 +194,14 @@ export default function Home() {
                     {splitVerdict.plan.parts.map((p, i) => (
                       <li key={i}>
                         Part {i + 1}: {p.length}{" "}
-                        {p.length === 1 ? "image" : "images"} (min ≈{" "}
-                        {fmtBytes(splitVerdict.plan.partMinBytes[i])})
+                        {p.length === 1 ? "image" : "images"} (≈{" "}
+                        {fmtBytes(
+                          Math.min(
+                            targetBytes!,
+                            splitVerdict.plan.partMaxBytes[i],
+                          ),
+                        )}
+                        )
                       </li>
                     ))}
                   </ul>

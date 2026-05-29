@@ -8,15 +8,18 @@ Web app that turns a batch of images into a single PDF whose final size fits a u
 - After upload, app shows the minimum achievable PDF size and pre-fills the target input with that value.
 - As the user edits the target, a live status text below the input turns green (feasible) or red (below minimum); no separate "check" step.
 - The Compress button is always visible but only enabled when the target is feasible.
-- **Split into multiple PDFs.** A checkbox reinterprets the target as a *per-part* cap: the app packs the images across as many PDFs as needed (preserving order) so each one lands under the target. Useful for upload limits or when no single PDF can hit a very small target.
+- **Split into multiple PDFs.** A checkbox reinterprets the target as a *per-part* cap: the app packs the images across as many PDFs as needed (preserving order) so each one lands under the target. The preview shows each part's predicted size (≈ the smaller of the target and the part's uncompressed size). Useful for upload limits or when no single PDF can hit a very small target.
 - Output PDF(s) download directly from the browser — one Download button per file.
 - Per-image upload limit: 25 MB.
+- Sizes use **decimal MB** (1 MB = 1,000,000 bytes), matching phone/laptop file managers and upload limits — what the app shows equals what the OS shows.
 
 ## Design highlights
 
 - **Fully client-side.** No uploads. Images never leave the browser. No server, no database, no accounts.
 - **Portable static build.** Pure `next export` output — the same `out/` directory deploys to Vercel, Cloudflare Pages, or a self-hosted NAS.
 - **Web Worker for heavy work.** Compression and PDF assembly run off the main thread so the UI stays responsive on large batches. Falls back to the main thread on browsers without `OffscreenCanvas` (Safari < 16.4).
+- **Pooled decode on upload.** Image decode (incl. HEIC conversion) runs in a pool of up to 4 web workers — off the main thread, with bounded concurrency so peak memory stays flat regardless of batch size. Keeps large drops (50+ photos, 200+ MB) from freezing the UI or OOM-ing low-RAM phones. Falls back to a concurrency-limited main-thread path when workers are unavailable.
+- **Downscaled previews.** The file grid renders ≤512px JPEG thumbnails (generated at decode time), not the full-resolution originals — a few MB of previews instead of hundreds. Originals are kept untouched for compression.
 - **Lazy HEIC support.** The HEIC decoder is only fetched when an iPhone photo is dropped.
 - **Insecure-context fallback.** Works on plain HTTP LAN deployments — `crypto.randomUUID` is feature-detected with a `Math.random`-based fallback.
 

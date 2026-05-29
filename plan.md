@@ -47,9 +47,11 @@ When the target is too small for a single PDF — or the user just wants smaller
 
 1. **Feasibility per image.** If any single image's minimum contribution (`(w/2)·(h/2)·MIN_BPP + per-page overhead`) plus base overhead exceeds the target, the split is `infeasibleSplit` — that one image can never fit any part. Status names the offending image and its minimum.
 2. **Greedy bin-pack.** Walk images in order, accumulating estimated *minimum* bytes into the current part. When adding the next image would push the part's min over the target (and the part is non-empty), start a new part. Returns `feasibleSplit` with `{ parts, partsCount, partMinBytes }`.
-3. Packing uses the optimistic `min` envelope, not `max`. Each part still runs the full compression iteration to land within ±10% of the per-part target, so a part may end below its min estimate but never far above target.
+3. Packing uses the optimistic `min` envelope (`partMinBytes`), not `max`. Each part still runs the full compression iteration to land within ±10% of the per-part target, so a part may end below its min estimate but never far above target.
 
 Greedy (first-fit by input order) keeps page order intact across parts — important for documents. No bin-packing optimization to minimize part count; order preservation wins over tightest pack.
+
+**Per-part preview shows predicted size, not the packing floor.** `partMinBytes` is the optimistic floor used *internally* to decide packing — half-dimensions × `MIN_BPP`, i.e. what a part could shrink to if maximally crushed. It is a poor forecast of the actual output: compression aims at the per-part **target** and stops within ±10%, compressing only as much as needed. A part whose `max` (Σ originals + overhead) is already below target barely compresses and lands near its max, far above the floor — e.g. a lone leftover image with a 165 KB floor but a 4.4 MB original outputs ~4.8 MB under a 5 MB target. So `planParts` also returns `partMaxBytes` (per-part `estimateMaxBytes`), and the preview displays `≈ min(target, partMaxBytes)` per part — the realistic expected size. `partMinBytes` stays in the plan for the packing decision only.
 
 ## File Layout
 
@@ -60,14 +62,16 @@ app/
   globals.css         shadcn theme tokens (light + dark)
 components/
   Dropzone.tsx
-  FileList.tsx        thumbnails, sizes, remove
+  FileList.tsx        downscaled thumbnails, sizes, remove
   TargetSizeInput.tsx numeric + KB/MB toggle, live status text
   ProgressView.tsx
   DownloadCard.tsx
   ui/                 shadcn primitives (button, card, input, progress, alert)
 lib/
   types.ts            ImageItem, Verdict, SplitVerdict/SplitPlan, CompressOutput, FlowState, Action
-  decode.ts           File → ImageBitmap (+ HEIC branch, randomUUID fallback)
+  decode.ts           File → ImageBitmap (+ HEIC branch, randomUUID fallback); thumbnail helper; main-thread fallback decode
+  decode-worker.ts    DedicatedWorker: HEIC convert + createImageBitmap + ≤512px thumbnail, off main thread
+  decode-pool.ts      main-thread dispatcher: pool of ≤4 decode workers, bounded-concurrency queue (+ no-worker fallback)
   estimate.ts
   compress.ts
   pdf.ts              pdf-lib assembly, one page per image
@@ -77,6 +81,18 @@ lib/
 ```
 
 Web Worker required — encoding a 25 MB JPEG on the main thread freezes UI for seconds. Uses `OffscreenCanvas`; falls back to main thread if missing (Safari < 16.4). The worker takes `parts: ImageItem[][]` (one entry = one PDF; single-PDF mode passes `[items]`), compresses + assembles each part in turn, and returns `CompressOutput[]` (`{ blob, finalBytes, name }`). Progress is scaled `(i + partProgress) / totalParts` with a `Part i/N:` label prefix when N > 1.
+
+## Upload Decode Pipeline (`lib/decode-pool.ts` + `lib/decode-worker.ts`)
+
+The original `handleFiles` did `Promise.all(files.map(fileToImageItem))` — every file decoded at once on the main thread. On a 50-file / 200 MB drop (typical iPhone HEIC batch) this froze the UI and spiked memory: HEIC conversion via `heic2any` is pure-JS/WASM and slow, and each `createImageBitmap` holds a full-resolution decoded bitmap (a 12 MP photo ≈ 48 MB RGBA), so 50 concurrent decodes could peak near 2 GB → swap/OOM on phones.
+
+Three-part fix:
+
+1. **Worker offload.** `decode-worker.ts` runs HEIC conversion + `createImageBitmap` in a DedicatedWorker, keeping the main thread free during large drops.
+2. **Pooled bounded concurrency.** `decode-pool.ts` spins up to `min(4, hardwareConcurrency, fileCount)` workers fed from a shared index queue — each worker pulls the next file on completion. At most ~4 full-res bitmaps live at once regardless of batch size, so peak memory is flat. Falls back to a concurrency-limited main-thread loop (same pool size) when `Worker` is unavailable.
+3. **Downscaled thumbnails.** The worker renders a ≤512px JPEG (`OffscreenCanvas`, q0.7) at decode time; `previewUrl` points at that, not the full blob. The grid holds a few MB of thumbnails instead of hundreds of MB of originals. Originals (`item.file`) are kept untouched — compression re-decodes them from source. Main-thread fallback generates the same thumbnail via `<canvas>` + `toBlob`.
+
+Semantics preserved from the old single-file path: `item.file` stays the original, HEIC preview uses the converted JPEG when no thumbnail is produced, dimensions come from the bitmap. `URL.createObjectURL` is called on the main thread (worker-created object URLs aren't usable by DOM `<img>`).
 
 ## State Machine (`lib/flow.ts`)
 
@@ -94,7 +110,7 @@ idle → filesAdded ⇄ (live verdict derived in page.tsx)
 - Compress button is always rendered but disabled when verdict is `infeasible` or absent.
 - "Minimum achievable PDF size" surfaced above the target input as soon as files are added.
 - Target input defaults to the minimum feasible value rounded up to a clean display unit so the form opens in a runnable state.
-- **Split checkbox** below the target input. When checked, the single-PDF verdict text is hidden and replaced by a split preview: part count, per-part image count, and per-part min estimate — or a red "X alone needs ≥ Y" message when infeasible. Compress button label flips to "Compress & build N PDFs".
+- **Split checkbox** below the target input. When checked, the single-PDF verdict text is hidden and replaced by a split preview: part count, per-part image count, and per-part predicted size (`≈ min(target, partMax)`, not the internal packing floor) — or a red "X alone needs ≥ Y" message when infeasible. Compress button label flips to "Compress & build N PDFs".
 - **DownloadCard** renders one row per output with its own size + ±% vs target and a Download button; multi-part shows a total-bytes summary. Object URLs created in `useMemo`, revoked on unmount.
 
 ## Critical Tradeoffs
@@ -104,6 +120,7 @@ idle → filesAdded ⇄ (live verdict derived in page.tsx)
 - **Global q** can over-degrade small images. Acceptable v1; per-image fallback deferred.
 - **`OffscreenCanvas` on Safari** shipped 16.4 (2023). Main-thread path covers older.
 - **`crypto.randomUUID` requires a secure context.** Detected at runtime with a `Date.now() + Math.random()` fallback so HTTP LAN deployments still work.
+- **Decimal MB, not binary MiB.** All size math and display use 1 MB = 1,000,000 bytes. Earlier the app used 1024·1024, so a part shown as 4.89 MB read as 5.1 MB in phone/laptop file managers and could blow a real 5 MB upload cap. Decimal matches what the OS and upload limits report; the cost is the app no longer agrees with tools that show binary MiB.
 
 ## Build
 
@@ -168,8 +185,9 @@ Same `out/` artifact deploys everywhere. Push to GitHub triggers Vercel and/or C
 4. Drop 1 HEIC → lazy `heic2any` load, conversion succeeds.
 5. Drop 30 MB file → rejected at dropzone with toast.
 6. Target above original total → green "Target above original size — PDF will be at most X" status.
-7. Check "Split into multiple PDFs" with a target below the single-PDF min → preview lists N parts, each ≤ target; Compress produces N downloadable PDFs, each within ±10% of the per-part target.
+7. Check "Split into multiple PDFs" with a target below the single-PDF min → preview lists N parts with predicted size `≈ min(target, partMax)`, each ≤ target; Compress produces N downloadable PDFs, each within ±10% of the per-part target. A leftover part with one under-target image shows ≈ its original size (not a tiny floor) and the output matches.
 8. Set split target below the largest single image's minimum → red "X alone needs ≥ Y" message, Compress disabled.
 9. DevTools 4× CPU throttle → UI responsive during compress (proves worker).
+9a. Drop 50+ files (200+ MB, mixed HEIC) with 4× CPU throttle → UI stays responsive while "Reading images…" shows, memory stays flat (proves decode pool + thumbnails). Previews are downscaled thumbnails, originals intact in output.
 10. `pnpm build && pnpm dlx serve out` → app works fully against plain static server. Proves Cloudflare/NAS portability.
 11. Serve over HTTP from LAN IP → image upload still works (proves `crypto.randomUUID` fallback).
