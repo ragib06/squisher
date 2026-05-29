@@ -9,7 +9,7 @@ import { DownloadCard } from "@/components/DownloadCard";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { initialState, reducer } from "@/lib/flow";
-import { fileToImageItem } from "@/lib/decode";
+import { decodeFiles } from "@/lib/decode-pool";
 import { estimate, estimateMinBytes, planParts } from "@/lib/estimate";
 import { runJob } from "@/lib/worker";
 import type { ImageItem } from "@/lib/types";
@@ -67,7 +67,7 @@ export default function Home() {
   const handleFiles = useCallback(async (files: File[]) => {
     setDecoding(true);
     try {
-      const newItems = await Promise.all(files.map(fileToImageItem));
+      const newItems = await decodeFiles(files);
       dispatch({ type: "ADD_FILES", items: newItems });
     } catch (e) {
       setToast(e instanceof Error ? e.message : "Failed to read files");

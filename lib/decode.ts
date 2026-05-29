@@ -1,6 +1,6 @@
 import type { ImageItem } from "./types";
 
-function makeId(): string {
+export function makeId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
   }
@@ -14,7 +14,7 @@ const HEIC_TYPES = new Set([
   "image/heif-sequence",
 ]);
 
-function isHeic(file: File): boolean {
+export function isHeic(file: File): boolean {
   if (HEIC_TYPES.has(file.type.toLowerCase())) return true;
   const n = file.name.toLowerCase();
   return n.endsWith(".heic") || n.endsWith(".heif");
@@ -43,9 +43,30 @@ export async function decodeFile(
   return { bitmap, blob: file, type: file.type || "image/jpeg" };
 }
 
+const THUMB_MAX_EDGE = 512;
+
+async function makeThumbBlob(bitmap: ImageBitmap): Promise<Blob | null> {
+  const scale = Math.min(
+    1,
+    THUMB_MAX_EDGE / Math.max(bitmap.width, bitmap.height),
+  );
+  const w = Math.max(1, Math.round(bitmap.width * scale));
+  const h = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const g = canvas.getContext("2d");
+  if (!g) return null;
+  g.drawImage(bitmap, 0, 0, w, h);
+  return await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob((b) => resolve(b), "image/jpeg", 0.7),
+  );
+}
+
 export async function fileToImageItem(file: File): Promise<ImageItem> {
   const { bitmap, blob } = await decodeFile(file);
-  const previewUrl = URL.createObjectURL(blob);
+  const thumb = await makeThumbBlob(bitmap);
+  const previewUrl = URL.createObjectURL(thumb ?? blob);
   const item: ImageItem = {
     id: makeId(),
     file,
