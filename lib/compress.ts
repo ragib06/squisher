@@ -1,10 +1,5 @@
 import type { ImageItem } from "./types";
-import {
-  estimateMaxBytes,
-  pdfOverhead,
-  qualityForTarget,
-  totalPixels,
-} from "./estimate";
+import { estimateMaxBytes, pdfOverhead, qualityForTarget } from "./estimate";
 
 export type CompressedImage = {
   item: ImageItem;
@@ -128,13 +123,17 @@ export async function compressAll(
     actual = sumBytes(encoded) + overhead;
   }
 
-  if (actual > targetBytes * 1.1) {
-    const px = totalPixels(items);
-    const reductionPx = Math.max(0.1, targetBytes / actual);
-    scale = Math.sqrt(reductionPx);
+  // Iteratively downscale until we actually land at or under target.
+  // A single pass rarely converges when the batch starts far over budget
+  // (quality is already floored), so loop, shrinking dimensions each time
+  // and biasing slightly under target so the result never exceeds it.
+  let guard = 0;
+  while (actual > targetBytes && guard < 8) {
+    const factor = Math.sqrt((targetForImages * 0.95) / Math.max(actual - overhead, 1));
+    scale = Math.max(0.05, scale * Math.min(factor, 0.95));
     encoded = await encodePass(scale, quality, "Downscale");
     actual = sumBytes(encoded) + overhead;
-    void px;
+    guard++;
   }
 
   onProgress(1, `Compressed (${(actual / 1024).toFixed(0)} KB)`);
